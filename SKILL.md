@@ -1,7 +1,7 @@
 ---
 name: web-search-china
 description: China-focused web search helper for Baidu, Bing China, and 360 Search. Best-effort parsing with Bing RSS as primary strategy.
-homepage: https://github.com/kehaying/web_search_china_for_ai
+homepage: https://github.com/wopanda/web-search-china-openclaw
 metadata: {"clawdbot":{"emoji":"🇨🇳","requires":{"bins":["python3"],"python":true}}}
 ---
 
@@ -41,6 +41,25 @@ python3 {baseDir}/scripts/search.py "搜索关键词" --engine auto --count 8 --
 - `--engine`：`auto` / `baidu` / `bing` / `360`，默认 `auto`
 - `--count`：结果条数，默认 5，最大 10
 - `--pretty`：格式化 JSON 输出
+
+## 怎么理解它和 Tavily 的区别
+
+### web-search-china
+- 不需要 API key
+- 适合补充 **国内搜索结果**
+- 更偏本地化中文结果
+- 稳定性一般，属于 best-effort
+
+### Tavily
+- 需要 API key
+- 更适合 AI / agent 标准搜索工作流
+- 结构更干净，整体更稳
+- 更偏全网通用搜索，不是专为国内搜索设计
+
+## 简单建议
+
+- 要 **国内结果补充**：优先用 `web-search-china`
+- 要 **稳定、通用、全网研究**：优先用 Tavily
 
 ## 说明
 
