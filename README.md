@@ -4,45 +4,38 @@ Hardened China-focused web search skill for OpenClaw-style agents.
 
 ## What this is
 
-A lightweight search skill for **China-oriented search results**.
+A lightweight research/search layer for **China-oriented search results**.
 It is useful when:
 
 - you want more **Chinese-localized** results
-- you want to supplement normal web search with **Bing China / 360 / Baidu** coverage
+- you want to supplement normal web search with **Bing / 360 / Baidu** coverage
 - users explicitly ask for **国内搜索结果**
+- you want a controllable fallback when Tavily or general web search is unstable
 
 This repository now contains **two layers**:
 
-1. **`search.py`** — China web search helper
-2. **`search_router.py`** — unified router for **Tavily + China search fallback**
+1. **`search.py`** — China multi-engine search with query expansion, parallel recall, dedupe and rerank
+2. **`search_router.py`** — unified router for **Tavily + China hybrid fusion**
 
-## Router behavior
+## New architecture
 
-The router lets you do this:
+### China search layer
 
-- try **Tavily** first when global/general search is preferred
-- automatically fall back to **web-search-china** when Tavily fails or returns nothing
-- prefer **China search first** when the query looks Chinese / domestic-oriented
+The China layer no longer relies only on simple fallback order.
+It now supports:
 
-### Route policies
+- **query expansion**
+- **parallel recall** across Bing / 360 / Baidu
+- **dedupe** by canonical URL
+- **score-based reranking**
+- optional sequential mode for debugging
 
-- `auto` — smart route selection based on the query
-- `china-first` — always try China search first
-- `global-first` — always try Tavily first
+### Router layer
 
-## Current engine strategy
+The router now supports two modes:
 
-Inside China search:
-
-- **Bing**: primary, using **RSS** first for better stability
-- **360 Search**: HTML parsing fallback
-- **Baidu**: optional fallback, but less stable and often noisy
-
-Default China search `auto` order:
-
-1. `bing`
-2. `360`
-3. `baidu`
+- `hybrid` (recommended): merge results from multiple providers and rerank
+- `fallback`: keep the old first-success behavior
 
 ## Installation
 
@@ -54,105 +47,98 @@ pip3 install -r requirements.txt
 
 ### Optional: Tavily support
 
-If you want router-level global search + fallback, set:
+If you want hybrid routing with Tavily, set:
 
 ```bash
 export TAVILY_API_KEY=your_key_here
 ```
 
-Without `TAVILY_API_KEY`, the router can still work, but it will naturally fall back to China search.
+Without `TAVILY_API_KEY`, the router still works and will use the China layer only.
 
 ## Usage
 
-### A. Use China search directly
+### A. China search directly
+
+Recommended:
 
 ```bash
-python3 scripts/search.py "OpenClaw" --engine auto --count 5 --pretty
-python3 scripts/search.py "飞书 自动化" --engine bing --count 5 --pretty
+python3 scripts/search.py "福建OPC联盟" --engine auto --mode parallel --count 8 --pretty
 ```
 
-### B. Use the router
+Debug old behavior:
 
 ```bash
-python3 scripts/search_router.py "OpenClaw 是什么" --route auto --count 5 --pretty
-python3 scripts/search_router.py "latest ai agent framework" --route global-first --count 5 --pretty
-python3 scripts/search_router.py "飞书 自动化 国内方案" --route china-first --count 5 --pretty
+python3 scripts/search.py "福建OPC联盟" --engine auto --mode sequential --count 8 --pretty
 ```
 
-## What the router returns
+### B. Router mode
 
-Router output includes:
+Recommended hybrid fusion:
 
-- `used_provider` — which provider actually served the result
-- `attempts` — which providers were tried and whether they failed
-- `results` — final search results
-
-Example:
-
-```json
-{
-  "used_provider": "china",
-  "attempts": [
-    {"provider": "tavily", "ok": false, "reason": "timeout"},
-    {"provider": "china", "ok": true, "result_count": 5}
-  ],
-  "results": []
-}
+```bash
+python3 scripts/search_router.py "福建OPC联盟" --route auto --mode hybrid --count 8 --pretty
+python3 scripts/search_router.py "latest ai agent framework" --route global-first --mode hybrid --count 6 --pretty
 ```
+
+Old fallback behavior:
+
+```bash
+python3 scripts/search_router.py "你的问题" --route auto --mode fallback --count 5 --pretty
+```
+
+## How it works now
+
+### China search (`search.py`)
+For `--engine auto --mode parallel`:
+
+1. expand the query into several variants
+2. run Bing / 360 / Baidu in parallel
+3. merge all candidates
+4. dedupe by canonical URL
+5. rerank using relevance + domain quality rules
+
+### Router (`search_router.py`)
+For `--mode hybrid`:
+
+1. resolve route order (`auto` / `china-first` / `global-first`)
+2. query both providers in the resolved plan
+3. merge results
+4. dedupe + rerank
+5. return a single fused result list
 
 ## Recommended usage guidance
 
 ### If your server is in China
-Recommended logic:
+Recommended:
 
-- Chinese / domestic queries → `--route auto` or `--route china-first`
-- Global / English research → `--route global-first`
-- If Tavily is unstable, the router will degrade to China search
-
-### If you just want the shortest working path
-
-```bash
-python3 scripts/search_router.py "你的问题" --route auto --count 5 --pretty
-```
+- Chinese / domestic queries → `--route auto --mode hybrid`
+- official / org / local info lookup → `search.py --engine auto --mode parallel`
+- global / English research → `--route global-first --mode hybrid`
 
 ## Difference vs Tavily
 
 ### This repository
 - can work without API key
 - better for Chinese-localized / domestic search supplementation
-- lower stability than a real API
-- useful as fallback or local-first supplement
+- highly controllable
+- supports custom reranking rules
+- useful as a local-first research orchestration layer
 
 ### Tavily
 - requires API key
 - cleaner structured output
-- more stable for agent workflows
-- better for global/general research
+- generally more stable for global/general research
+- stronger as a ready-made search provider
 
 ### Practical rule
 
-- **Need 国内结果 / 中文本地化补充** → use China search or router `auto`
-- **Need stable global agent search** → use Tavily or router `global-first`
-
-## For people you share this repo with
-
-Send them this repo:
-
-**https://github.com/wopanda/web-search-china-openclaw**
-
-Then they can do:
-
-```bash
-git clone https://github.com/wopanda/web-search-china-openclaw.git
-cd web-search-china-openclaw
-pip3 install -r requirements.txt
-python3 scripts/search_router.py "要搜索的问题" --route auto --count 5 --pretty
-```
+- **Need 国内结果 / 中文本地化补充** → use China search or router `hybrid`
+- **Need stable global agent search** → use Tavily or router `global-first --mode hybrid`
 
 ## Files
 
-- `scripts/search.py` — China search engine helper
-- `scripts/search_router.py` — Tavily + China fallback router
+- `scripts/search.py` — China parallel recall + rerank layer
+- `scripts/search_router.py` — Tavily + China fusion router
 - `requirements.txt` — Python dependencies
 - `SKILL.md` — skill-facing usage description
 - `CHANGELOG.md` — release notes
@@ -160,8 +146,8 @@ python3 scripts/search_router.py "要搜索的问题" --route auto --count 5 --p
 
 ## Known limitations
 
-- This tool is **best-effort**, not a guaranteed API.
-- Bing is currently the most stable source in China search mode.
-- 360 may include low-quality or promotional pages.
-- Baidu may trigger verification or return ad-heavy results.
+- This tool is still **best-effort**, not a guaranteed API.
+- Baidu may still trigger verification pages.
+- 360 may still return low-quality or promotional pages.
+- Query rewriting and reranking are rule-based, not ML-trained.
 - Search engine behavior may change over time.

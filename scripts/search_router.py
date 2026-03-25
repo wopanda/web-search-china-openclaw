@@ -36,6 +36,18 @@ CHINA_HINT_KEYWORDS = (
     "部署",
     "自动化",
 )
+LOW_QUALITY_HOST_KEYWORDS = (
+    "mydown.com",
+    "gamesteamplay.cn",
+    "download",
+    "soft",
+)
+HIGH_QUALITY_HOST_KEYWORDS = (
+    ".gov.cn",
+    ".org.cn",
+    ".edu.cn",
+    "github.com",
+)
 
 
 def has_chinese(text: str) -> bool:
@@ -95,9 +107,33 @@ class TavilySearch:
                     "url": url,
                     "snippet": snippet,
                     "engine": "tavily",
+                    "score": self._score_result(query, title, url, snippet),
                 }
             )
         return results
+
+    def _score_result(self, query: str, title: str, url: str, snippet: str) -> float:
+        q = (query or "").lower()
+        title_l = title.lower()
+        snippet_l = snippet.lower()
+        score = 0.0
+        if q in title_l:
+            score += 8.0
+        if q in snippet_l:
+            score += 4.0
+        for token in re.split(r"\s+", query):
+            tok = token.lower().strip()
+            if len(tok) <= 1:
+                continue
+            if tok in title_l:
+                score += 2.0
+            if tok in snippet_l:
+                score += 1.0
+        if any(k in url.lower() for k in HIGH_QUALITY_HOST_KEYWORDS):
+            score += 2.0
+        if any(k in url.lower() for k in LOW_QUALITY_HOST_KEYWORDS):
+            score -= 4.0
+        return score + 2.0
 
 
 class SearchRouter:
@@ -114,7 +150,7 @@ class SearchRouter:
             return ["china", "tavily"]
         return ["tavily", "china"]
 
-    def search(self, query: str, count: int = 5, route: str = "auto") -> Dict[str, Any]:
+    def search(self, query: str, count: int = 5, route: str = "auto", mode: str = "hybrid") -> Dict[str, Any]:
         query = (query or "").strip()
         if not query:
             raise ValueError("query is required")
@@ -123,40 +159,87 @@ class SearchRouter:
         plan = list(self.resolve_route(query, route))
         attempts: List[Dict[str, Any]] = []
 
+        if mode == "fallback":
+            for provider in plan:
+                try:
+                    if provider == "tavily":
+                        results = self.tavily.search(query, count=count)
+                    else:
+                        results = [asdict(r) for r in self.china.search(query, engine="auto", count=count, mode="parallel")]
+                    if results:
+                        attempts.append({"provider": provider, "ok": True, "result_count": len(results)})
+                        return {
+                            "query": query,
+                            "route": route,
+                            "mode": mode,
+                            "resolved_route": plan,
+                            "used_provider": provider,
+                            "attempts": attempts,
+                            "results": results,
+                        }
+                    attempts.append({"provider": provider, "ok": False, "reason": "empty_results"})
+                except Exception as exc:
+                    attempts.append({"provider": provider, "ok": False, "reason": str(exc)})
+            return {
+                "query": query,
+                "route": route,
+                "mode": mode,
+                "resolved_route": plan,
+                "used_provider": None,
+                "attempts": attempts,
+                "results": [],
+            }
+
+        collected: List[dict] = []
         for provider in plan:
             try:
                 if provider == "tavily":
-                    results = self.tavily.search(query, count=count)
+                    results = self.tavily.search(query, count=max(3, count))
                 else:
-                    results = [asdict(r) for r in self.china.search(query, engine="auto", count=count)]
-
-                if results:
-                    attempts.append({"provider": provider, "ok": True, "result_count": len(results)})
-                    return {
-                        "query": query,
-                        "route": route,
-                        "resolved_route": plan,
-                        "used_provider": provider,
-                        "attempts": attempts,
-                        "results": results,
-                    }
-
-                attempts.append({"provider": provider, "ok": False, "reason": "empty_results"})
+                    results = [asdict(r) for r in self.china.search(query, engine="auto", count=max(5, count), mode="parallel")]
+                attempts.append({"provider": provider, "ok": True, "result_count": len(results)})
+                collected.extend(results)
             except Exception as exc:
                 attempts.append({"provider": provider, "ok": False, "reason": str(exc)})
 
+        merged = self._merge_results(collected, count=count)
+        used = "hybrid" if merged else None
         return {
             "query": query,
             "route": route,
+            "mode": mode,
             "resolved_route": plan,
-            "used_provider": None,
+            "used_provider": used,
             "attempts": attempts,
-            "results": [],
+            "results": merged,
         }
+
+    def _merge_results(self, items: List[dict], count: int) -> List[dict]:
+        best: Dict[str, dict] = {}
+        for item in items:
+            url = str(item.get("url") or "").strip()
+            if not url:
+                continue
+            key = self._canonicalize_url(url)
+            prev = best.get(key)
+            if prev is None or float(item.get("score") or 0.0) > float(prev.get("score") or 0.0):
+                best[key] = item
+
+        ranked = sorted(best.values(), key=lambda x: float(x.get("score") or 0.0), reverse=True)
+        out = []
+        for idx, item in enumerate(ranked[:count], start=1):
+            item["rank"] = idx
+            out.append(item)
+        return out
+
+    def _canonicalize_url(self, url: str) -> str:
+        from urllib.parse import urlparse
+        parsed = urlparse(url)
+        return f"{parsed.scheme}://{parsed.netloc}{parsed.path}".rstrip("/").lower()
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Search router: Tavily + China search fallback")
+    parser = argparse.ArgumentParser(description="Search router: Tavily + China search fusion")
     parser.add_argument("query", help="search query")
     parser.add_argument("--count", type=int, default=5)
     parser.add_argument(
@@ -164,6 +247,12 @@ def parse_args() -> argparse.Namespace:
         choices=["auto", "china-first", "global-first"],
         default="auto",
         help="routing policy",
+    )
+    parser.add_argument(
+        "--mode",
+        choices=["hybrid", "fallback"],
+        default="hybrid",
+        help="hybrid=merge multi-source results, fallback=first-success strategy",
     )
     parser.add_argument("--pretty", action="store_true")
     return parser.parse_args()
@@ -173,7 +262,7 @@ def main() -> int:
     args = parse_args()
     try:
         router = SearchRouter()
-        payload = router.search(args.query, count=args.count, route=args.route)
+        payload = router.search(args.query, count=args.count, route=args.route, mode=args.mode)
         if args.pretty:
             print(json.dumps(payload, ensure_ascii=False, indent=2))
         else:
